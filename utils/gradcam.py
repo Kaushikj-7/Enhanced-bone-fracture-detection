@@ -18,28 +18,39 @@ class GradCAM:
 
         # Register hooks
         self.target_layer.register_forward_hook(self.save_activation)
-        self.target_layer.register_backward_hook(self.save_gradient)
+        # Using register_full_backward_hook for compatibility with modern PyTorch
+        if hasattr(self.target_layer, 'register_full_backward_hook'):
+            self.target_layer.register_full_backward_hook(self.save_gradient)
+        else:
+            self.target_layer.register_backward_hook(self.save_gradient)
 
     def save_activation(self, module, input, output):
         self.activations = output
 
     def save_gradient(self, module, grad_input, grad_output):
+        # grad_output is a tuple of gradients with respect to the outputs
         self.gradients = grad_output[0]
 
     def generate_cam(self, input_image, target_class=None):
         # Forward pass
         output = self.model(input_image)
+        print(f"Model output shape: {output.shape}")
 
         if target_class is None:
-            # Assuming binary outcome (sigmoid > 0.5)
-            target_class = 0  # Single output neuron index
+            target_class = 0
 
         # Zero gradients
         self.model.zero_grad()
 
         # Backward pass
-        # Since output is [B, 1], we can backward directly
         output.backward(retain_graph=True)
+        
+        if self.gradients is None:
+            print("ERROR: Gradients were not captured by hook!")
+            return np.zeros((input_image.shape[2], input_image.shape[3]))
+        
+        print(f"Gradients captured: shape={self.gradients.shape}, mean={self.gradients.mean().item():.6f}")
+        print(f"Activations captured: shape={self.activations.shape}, mean={self.activations.mean().item():.6f}")
 
         # Pool the gradients across the channels
         pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])

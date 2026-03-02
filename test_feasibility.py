@@ -63,34 +63,36 @@ def main():
     input_tensor.requires_grad = True
     
     # Target layer for ResNet18 based Sequential backbone
-    # In models/cnn_branch.py, we did: self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
-    # Based on our print, index 7 is the last block.
     try:
         target_layer = model.cnn_branch.backbone[7][-1]
         grad_cam = GradCAM(model=model, target_layer=target_layer)
         
         heatmap = grad_cam.generate_cam(input_tensor, target_class=0)
-        
+        print(f"Heatmap stats: min={heatmap.min():.4f}, max={heatmap.max():.4f}, mean={heatmap.mean():.4f}")
+
         # Denormalize image for visualization
         img_np = input_tensor[0].detach().cpu().permute(1, 2, 0).numpy()
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         img_np = std * img_np + mean
         img_np = np.clip(img_np, 0, 1)
-        
-        # Save temp image for overlay
+
+        # Save original and heatmap overlay
+        plt.imsave(os.path.join(output_dir, "original_sample.png"), img_np)
+
+        # Save temp image for overlay function (cv2 needs file on disk or specific format)
         temp_path = os.path.join(output_dir, "temp_cam_input.png")
         plt.imsave(temp_path, img_np)
-        
+
         # Overlay
         import cv2
         cam_overlay = overlay_heatmap(temp_path, heatmap)
-        
+
         # Save final result
         save_path = os.path.join(output_dir, "sample_heatmap.png")
         cv2.imwrite(save_path, cam_overlay)
         print(f"Success! Heatmap saved to: {save_path}")
-        
+
         if os.path.exists(temp_path):
             os.remove(temp_path)
             
