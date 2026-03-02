@@ -56,7 +56,9 @@ class GradCAM:
         heatmap = np.maximum(heatmap.cpu(), 0)
 
         # Normalize the heatmap
-        heatmap /= torch.max(heatmap)
+        heatmap_max = torch.max(heatmap)
+        if heatmap_max > 0:
+            heatmap /= heatmap_max
 
         return heatmap.numpy()
 

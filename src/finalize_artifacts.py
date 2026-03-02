@@ -124,13 +124,13 @@ def get_target_layer(model, exp_name):
     # Determine the target layer for GradCAM based on model type
     try:
         if exp_name == "cnn":
-            # ResNet18 typical last layer: model.cnn_branch.backbone.layer4[-1]
-            return model.cnn_branch.backbone.layer4[-1]
+            # ResNet18 typical last layer in our Sequential backbone is index 7
+            return model.cnn_branch.backbone[7][-1]
         elif exp_name == "hybrid":
-            # HybridModel uses 'cnn_branch'
-            return model.cnn_branch.backbone.layer4[-1]
+            # HybridModel uses 'cnn_branch' with same ResNet structure
+            return model.cnn_branch.backbone[7][-1]
         elif exp_name == "vit":
-            # ViT GradCAM is hard with standard hooks (needs attention rollout), skipping for now
+            # ViT GradCAM is hard with standard hooks, skipping for now
             return None
     except Exception as e:
         print(f"Could not resolve target layer for {exp_name}: {e}")
