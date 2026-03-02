@@ -1,0 +1,19 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Data & Outputs
+data/
+outputs/
+test_outputs/
+
+# IDEs
+.vscode/
+.idea/
+
+# Large files
+*.pdf
+*.png
+*.ipynb_checkpoints
