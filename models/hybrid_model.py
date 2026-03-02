@@ -40,10 +40,27 @@ class HybridModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(256, num_classes),
-            # Note: We do NOT add a Sigmoid layer here because training/train.py 
-            # and src/run_full_pipeline.py use nn.BCEWithLogitsLoss() which expects logits.
-            # Sigmoid is applied during metric calculation.
         )
+
+    def set_fine_tuning(self, cnn_unfreeze=True, vit_unfreeze=True):
+        """
+        Selectively unfreeze the last layers of backbones for 'Optimization'.
+        This allows the model to learn specific medical textures (fractures).
+        """
+        if cnn_unfreeze:
+            # Unfreeze the last layer of ResNet (layer4)
+            for name, param in self.cnn_branch.backbone.named_parameters():
+                if "7" in name: # Index 7 is the last block in our Sequential ResNet
+                    param.requires_grad = True
+        
+        if vit_unfreeze:
+            # Unfreeze the last block of ViT
+            # For timm models, typically named 'blocks.N'
+            for name, param in self.vit_branch.vit.named_parameters():
+                if "blocks.11" in name or "norm" in name: # Last block for ViT-Base, for Tiny check name
+                    param.requires_grad = True
+        
+        print("Model set to Fine-tuning mode.")
 
     def forward(self, x):
         # Extract features

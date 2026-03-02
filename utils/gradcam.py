@@ -25,11 +25,18 @@ class GradCAM:
             self.target_layer.register_backward_hook(self.save_gradient)
 
     def save_activation(self, module, input, output):
-        self.activations = output
+        # Handle layers that return (output, weights) tuples like our AttentionModule
+        if isinstance(output, tuple):
+            self.activations = output[0]
+        else:
+            self.activations = output
 
     def save_gradient(self, module, grad_input, grad_output):
-        # grad_output is a tuple of gradients with respect to the outputs
-        self.gradients = grad_output[0]
+        # grad_output is usually a tuple where index 0 is the gradient w.r.t the output
+        if isinstance(grad_output[0], tuple):
+            self.gradients = grad_output[0][0]
+        else:
+            self.gradients = grad_output[0]
 
     def generate_cam(self, input_image, target_class=None):
         # Forward pass

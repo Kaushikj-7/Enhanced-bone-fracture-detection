@@ -37,8 +37,8 @@ def run_single_gradcam(image_path, model_path="outputs/feasibility_test/best_mod
     input_tensor.requires_grad = True
 
     # 4. Setup Grad-CAM
-    # Target last conv layer of CNN branch
-    target_layer = model.cnn_branch.backbone[7][-1]
+    # Target the Attention layer to see the final FUSED decision focus
+    target_layer = model.attention
     grad_cam = GradCAM(model=model, target_layer=target_layer)
 
     # 5. Generate Heatmap
