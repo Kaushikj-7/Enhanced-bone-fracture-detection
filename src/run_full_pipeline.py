@@ -70,6 +70,7 @@ def main() -> None:
     parser.add_argument("--skip_artifacts", action="store_true")
     parser.add_argument("--skip_report", action="store_true")
     parser.add_argument("--num_gradcam", type=int, default=12)
+    parser.add_argument("--load_model", default=None, help="Path to existing model checkpoint (.pth)")
     args = parser.parse_args()
 
     _ensure_dir(args.output_dir)
@@ -98,6 +99,18 @@ def main() -> None:
             _ensure_dir(exp_dir)
 
             model = _build_model(exp, args.cnn_backbone, args.vit_backbone, pretrained)
+            
+            # Load existing checkpoint if provided
+            if args.load_model and os.path.exists(args.load_model):
+                print(f"Loading weights from {args.load_model} for {exp}...")
+                try:
+                    # Map location to CPU first to avoid CUDA errors, then move to device
+                    state_dict = torch.load(args.load_model, map_location='cpu')
+                    model.load_state_dict(state_dict)
+                    print("Checkpoint loaded successfully.")
+                except Exception as e:
+                    print(f"Warning: Could not load checkpoint: {e}")
+            
             model = model.to(device)
 
             # Support transfer learning for micro model (freeze CNN backbone)
