@@ -1,8 +1,44 @@
 import os
 import hashlib
 from PIL import Image
+import numpy as np
+import cv2
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+
+class AutoCrop:
+    """
+    Crops black borders and applies CLAHE to enhance bone density/cracks.
+    """
+    def __init__(self, threshold=15, apply_clahe=True):
+        self.threshold = threshold
+        self.apply_clahe = apply_clahe
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+    def __call__(self, img):
+        img_np = np.array(img)
+        if len(img_np.shape) == 3:
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_np
+            
+        # 1. CLAHE Enhancement for cracks
+        if self.apply_clahe:
+            gray = self.clahe.apply(gray)
+            # If original was RGB, we put enhanced gray back into channels or keep as RGB?
+            # Pretrained models expect 3 channels.
+            img_np = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+            
+        # 2. Find pixels above threshold
+        mask = gray > self.threshold
+        coords = np.argwhere(mask)
+        if coords.size == 0:
+            return Image.fromarray(img_np)
+            
+        y0, x0 = coords.min(axis=0)
+        y1, x1 = coords.max(axis=0) + 1
+        cropped = img_np[y0:y1, x0:x1]
+        return Image.fromarray(cropped)
 
 try:
     import kagglehub
@@ -282,9 +318,10 @@ class BoneFractureDataset(Dataset):
         return image, target
 
 
+from utils.advanced_preprocessing import AdvancedFracturePreprocessor
+
 def get_transforms(split):
-    # Standard ImageNet normalization figures
-    # (Pretrained models expect input normalized this way)
+    # Standard ImageNet normalization figures for our 3-channel stack
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )
@@ -292,13 +329,12 @@ def get_transforms(split):
     if split == "train":
         return transforms.Compose(
             [
-                transforms.Resize((224, 224)),
-                transforms.RandomHorizontalFlip(),  # Augmentation: Flipping
-                transforms.RandomRotation(20),  # Augmentation: Rotation
-                # Augmentation: Zooming (via RandomResizedCrop or Affine)
-                # RandomResizedCrop is standard for "zooming" in training
-                transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                transforms.ToTensor(),  # Converts to [0, 1]
+                AdvancedFracturePreprocessor(target_size=(224, 224)),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(30),
+                transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
+                transforms.ToTensor(),
+                transforms.RandomErasing(p=0.2, scale=(0.02, 0.08)),
                 normalize,
             ]
         )
@@ -306,9 +342,8 @@ def get_transforms(split):
         # Validation/Test
         return transforms.Compose(
             [
-                transforms.Resize((224, 224)),
-                # No random zooming/cropping for validation, just resize
-                transforms.ToTensor(),  # Converts to [0, 1]
+                AdvancedFracturePreprocessor(target_size=(224, 224)),
+                transforms.ToTensor(),
                 normalize,
             ]
         )

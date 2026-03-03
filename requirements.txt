@@ -6,6 +6,8 @@ pandas
 scikit-learn
 matplotlib
 opencv-python
+PyWavelets
+scikit-image
 tqdm
 Pillow
 kaggle

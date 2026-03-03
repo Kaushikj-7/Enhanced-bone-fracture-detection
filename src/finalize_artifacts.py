@@ -36,20 +36,24 @@ def _build_model(name: str, cnn_backbone: str, vit_backbone: str, pretrained: bo
             vit_model=vit_backbone,
             pretrained=pretrained,
         )
+    if name == "micro":
+        from models.micro_hybrid import MicroHybridModel
+        return MicroHybridModel(pretrained=pretrained)
     raise ValueError(f"Unknown experiment: {name}")
-
 
 def load_checkpoint(model, path):
     if not os.path.exists(path):
         print(f"Warning: Checkpoint not found at {path}")
         return model
-    checkpoint = torch.load(path, map_location="cpu")
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint)
+    try:
+        checkpoint = torch.load(path, map_location="cpu")
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.load_state_dict(checkpoint)
+    except Exception as e:
+        print(f"Error loading checkpoint {path}: {e}")
     return model
-
 
 def evaluate_model(model, loader, device, output_dir, exp_name):
     model.eval()
@@ -62,11 +66,15 @@ def evaluate_model(model, loader, device, output_dir, exp_name):
             inputs = inputs.to(device)
             # Forward
             outputs = model(inputs)
-            # Softmax
-            probs = torch.softmax(outputs, dim=1)[:, 1]
+            # Sigmoid for binary classification probability
+            probs = torch.sigmoid(outputs).squeeze()
 
-            all_preds.extend(probs.cpu().numpy())
-            all_labels.extend(labels.numpy())
+            # Handle case where batch size is 1
+            if probs.dim() == 0:
+                probs = probs.unsqueeze(0)
+
+            all_preds.extend(probs.cpu().numpy().reshape(-1))
+            all_labels.extend(labels.cpu().numpy().reshape(-1))
 
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
@@ -119,10 +127,13 @@ def evaluate_model(model, loader, device, output_dir, exp_name):
 
     return all_preds, all_labels
 
-
 def get_target_layer(model, exp_name):
     # Determine the target layer for GradCAM based on model type
     try:
+        # Priority: Check if model has explicit method for GradCAM target
+        if hasattr(model, "get_last_conv_layer"):
+            return model.get_last_conv_layer()
+
         if exp_name == "cnn":
             # ResNet18 typical last layer in our Sequential backbone is index 7
             return model.cnn_branch.backbone[7][-1]
@@ -185,28 +196,20 @@ def run_gradcam(model, loader, device, output_dir, exp_name, num_images=5):
                 # Prepare image for overlay
                 img_np = inputs[i].cpu().detach().permute(1, 2, 0).numpy()
                 # Denormalize roughly for visualization (assuming ImageNet norms)
-                # mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
                 mean = np.array([0.485, 0.456, 0.406])
                 std = np.array([0.229, 0.224, 0.225])
                 img_np = std * img_np + mean
                 img_np = np.clip(img_np, 0, 1)
 
-                # Save original temp file for overlay function
-                orig_path = os.path.join(cam_dir, f"temp_orig_{count}.png")
-                plt.imsave(orig_path, img_np)
+                # Convert RGB to BGR for OpenCV overlay
+                img_bgr = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
 
-                # Use overlay_heatmap
-                import cv2
+                # Use overlay_heatmap directly with BGR image
+                overlay = overlay_heatmap(img_bgr, heatmap)
 
-                overlay = overlay_heatmap(orig_path, heatmap)
-
-                # Save final visualization together
+                # Save final visualization
                 save_path = os.path.join(cam_dir, f"cam_{count}_label_{labels[i]}.png")
                 cv2.imwrite(save_path, overlay)
-
-                # cleanup temp
-                if os.path.exists(orig_path):
-                    os.remove(orig_path)
 
                 count += 1
 

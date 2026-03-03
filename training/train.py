@@ -9,7 +9,7 @@ import copy
 from utils.metrics import compute_metrics, save_metrics
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None):
     model.train()
     running_loss = 0.0
     all_preds = []
@@ -18,15 +18,24 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     pbar = tqdm(dataloader, desc="Training")
     for inputs, labels in pbar:
         inputs = inputs.to(device)
-        labels = labels.to(device).float().unsqueeze(1)  # Ensure [B, 1]
+        labels = labels.to(device).float().unsqueeze(1)
 
         optimizer.zero_grad()
 
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-
-        loss.backward()
-        optimizer.step()
+        # Automatic Mixed Precision (AMP)
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
         running_loss += loss.item() * inputs.size(0)
 
@@ -55,8 +64,14 @@ def validate_one_epoch(model, dataloader, criterion, device):
             inputs = inputs.to(device)
             labels = labels.to(device).float().unsqueeze(1)
 
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            # Use autocast for validation as well if on GPU
+            if device.type == 'cuda':
+                with torch.cuda.amp.autocast():
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+            else:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
             running_loss += loss.item() * inputs.size(0)
 
@@ -71,16 +86,12 @@ def validate_one_epoch(model, dataloader, criterion, device):
 
 
 def print_trainable_parameters(model):
-    """
-    Prints the number of trainable parameters in the model.
-    """
     trainable_params = 0
     all_param = 0
     for name, param in model.named_parameters():
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
-            # print(f"Trainable: {name}") # Optional verbose listing
     print(
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param:.2f}"
     )
@@ -92,13 +103,18 @@ def train_pipeline(model, train_loader, val_loader, config, device, save_dir):
     # Print trainable info
     print_trainable_parameters(model)
 
-    # Filter params to only those requiring grad (Important for correct optimizer behavior)
+    # Filter params to only those requiring grad
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=config["training"]["learning_rate"])
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.1, patience=2
     )
+
+    # Initialize AMP Scaler if on CUDA
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    if scaler:
+        print("Enabling Mixed Precision (AMP) training.")
 
     best_model_wts = copy.deepcopy(model.state_dict())
     best_loss = float("inf")
@@ -113,7 +129,7 @@ def train_pipeline(model, train_loader, val_loader, config, device, save_dir):
         print(f"Epoch {epoch + 1}/{config['training']['num_epochs']}")
 
         train_loss, train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer, device
+            model, train_loader, criterion, optimizer, device, scaler=scaler
         )
         val_loss, val_metrics = validate_one_epoch(model, val_loader, criterion, device)
 

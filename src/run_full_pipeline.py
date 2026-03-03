@@ -15,11 +15,11 @@ from training.train import train_pipeline
 
 def _parse_experiments(value: str) -> List[str]:
     experiments = [x.strip() for x in value.split(",") if x.strip()]
-    allowed = {"cnn", "vit", "hybrid"}
+    allowed = {"cnn", "vit", "hybrid", "micro"}
     for x in experiments:
         if x not in allowed:
             raise argparse.ArgumentTypeError(
-                f"Invalid experiment '{x}'. Allowed: cnn, vit, hybrid"
+                f"Invalid experiment '{x}'. Allowed: cnn, vit, hybrid, micro"
             )
     return experiments
 
@@ -35,6 +35,9 @@ def _build_model(name: str, cnn_backbone: str, vit_backbone: str, pretrained: bo
             vit_model=vit_backbone,
             pretrained=pretrained,
         )
+    if name == "micro":
+        from models.micro_hybrid import MicroHybridModel
+        return MicroHybridModel(pretrained=pretrained)
     raise ValueError(f"Unknown experiment: {name}")
 
 
@@ -61,6 +64,7 @@ def main() -> None:
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--fine_tune", action="store_true", help="Unfreeze the last blocks of backbones for better performance.")
     parser.add_argument("--no_pretrained", action="store_true")
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_artifacts", action="store_true")
@@ -95,6 +99,21 @@ def main() -> None:
 
             model = _build_model(exp, args.cnn_backbone, args.vit_backbone, pretrained)
             model = model.to(device)
+
+            # Support transfer learning for micro model (freeze CNN backbone)
+            if exp == "micro" and not args.fine_tune:
+                if hasattr(model, "freeze_backbone"):
+                    model.freeze_backbone()
+
+            # Apply fine-tuning if requested (unfreeze last blocks)
+            if args.fine_tune and hasattr(model, "set_fine_tuning"):
+                print(f"Enabling fine-tuning for {exp} experiment...")
+                model.set_fine_tuning(True, True)
+                
+                # If using default LR (0.001), lower it for fine-tuning to prevent catastrophic forgetting
+                if args.learning_rate == 0.001:
+                    print("Lowering default learning rate to 0.0001 for fine-tuning.")
+                    args.learning_rate = 0.0001
 
             config = {
                 "dataset": {

@@ -1,30 +1,45 @@
 from torchvision import transforms
 from PIL import Image
+import numpy as np
+import cv2
+import os
 
+try:
+    from utils.advanced_preprocessing import AdvancedFracturePreprocessor
+except ImportError:
+    # If called from within utils/ or as a relative import fails, try to handle it.
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from utils.advanced_preprocessing import AdvancedFracturePreprocessor
 
 def get_transforms(mode="train", input_size=224):
     """
-    Returns image transformations for training and inference.
-
-    Training: Resize, Random Rotation, Horizontal Flip, Color Jitter
-    Validation/Test: ResizeOnly
+    Returns high-reliability image transformations (CLAHE + Wavelet + Frangi) for training and inference.
     """
+    # Standard ImageNet normalization for our 3-channel feature stack
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    )
+
     if mode == "train":
         return transforms.Compose(
             [
-                transforms.Resize((input_size, input_size)),
-                transforms.RandomRotation(15),
+                AdvancedFracturePreprocessor(target_size=(input_size, input_size)),
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomAffine(degrees=0, scale=(0.9, 1.1)),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1),
+                transforms.RandomRotation(30),
+                transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
                 transforms.ToTensor(),
+                transforms.RandomErasing(p=0.2, scale=(0.02, 0.08)),
+                normalize,
             ]
         )
     else:
+        # Validation/Test/Inference
         return transforms.Compose(
             [
-                transforms.Resize((input_size, input_size)),
+                AdvancedFracturePreprocessor(target_size=(input_size, input_size)),
                 transforms.ToTensor(),
+                normalize,
             ]
         )
 

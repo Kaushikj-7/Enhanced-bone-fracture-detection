@@ -81,11 +81,33 @@ class GradCAM:
         return heatmap.numpy()
 
 
-def overlay_heatmap(img_path, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
-    original_img = cv2.imread(img_path)
+def overlay_heatmap(img, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
+    """
+    Overlays a heatmap on an image.
+    :param img: Path to image or image array (numpy). If array, assumed to be BGR or RGB depending on source.
+    :param heatmap: 2D numpy array of the heatmap.
+    :param alpha: Transparency of the heatmap.
+    :param colormap: OpenCV colormap.
+    :return: BGR image with overlay.
+    """
+    if isinstance(img, str):
+        original_img = cv2.imread(img)
+    else:
+        # If it's a float array [0, 1], convert to [0, 255] uint8
+        if img.dtype == np.float32 or img.dtype == np.float64:
+            if img.max() <= 1.0:
+                img = (img * 255).astype(np.uint8)
+        original_img = img
+
+    # Resize heatmap to match image size
     heatmap = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
 
-    # Convert heatmap to RGB
+    # Normalize heatmap for visualization
+    heatmap = np.maximum(heatmap, 0)
+    if np.max(heatmap) > 0:
+        heatmap = heatmap / np.max(heatmap)
+    
+    # Convert heatmap to BGR using the specified colormap
     heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), colormap)
 
     # Superimpose

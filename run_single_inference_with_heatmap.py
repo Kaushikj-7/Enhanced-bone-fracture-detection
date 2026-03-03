@@ -6,23 +6,28 @@ from PIL import Image
 import cv2
 
 from models.hybrid_model import HybridModel
+from models.micro_hybrid import MicroHybridModel
 from utils.preprocessing import get_transforms
 from utils.gradcam import GradCAM, overlay_heatmap
 
-def run_single_gradcam(image_path, model_path="outputs/feasibility_test/best_model.pth", output_path="outputs/single_inference_heatmap.png"):
+def run_single_gradcam(image_path, model_type="micro", model_path=None, output_path="outputs/single_inference_heatmap.png"):
     # 1. Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # 2. Load model
-    # Architecture must match the feasibility test (ResNet18 + ViT-Tiny)
-    model = HybridModel(cnn_backbone="resnet18", vit_model="vit_tiny_patch16_224", pretrained=False)
+    if model_type == "micro":
+        model = MicroHybridModel(pretrained=True)
+        if model_path is None:
+            # For testing without a trained checkpoint, we'll use pretrained weights
+            print("Using pretrained MicroHybrid weights for structural verification.")
+        else:
+            model.load_state_dict(torch.load(model_path, map_location=device))
+    else:
+        model = HybridModel(cnn_backbone="resnet18", vit_model="vit_tiny_patch16_224", pretrained=False)
+        if model_path:
+            model.load_state_dict(torch.load(model_path, map_location=device))
     
-    if not os.path.exists(model_path):
-        print(f"Error: Model not found at {model_path}")
-        return
-
-    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
 
@@ -37,8 +42,13 @@ def run_single_gradcam(image_path, model_path="outputs/feasibility_test/best_mod
     input_tensor.requires_grad = True
 
     # 4. Setup Grad-CAM
-    # Target the Attention layer to see the final FUSED decision focus
-    target_layer = model.attention
+    # Dynamically resolve target layer
+    if hasattr(model, 'get_last_conv_layer'):
+        target_layer = model.get_last_conv_layer()
+    else:
+        # Fallback for standard HybridModel
+        target_layer = model.cnn_branch.backbone[7][-1]
+        
     grad_cam = GradCAM(model=model, target_layer=target_layer)
 
     # 5. Generate Heatmap
@@ -53,21 +63,18 @@ def run_single_gradcam(image_path, model_path="outputs/feasibility_test/best_mod
         img_np = std * img_np + mean
         img_np = np.clip(img_np, 0, 1)
         
-        # Save original temporarily for overlay function
-        temp_orig = "temp_inference_orig.png"
-        plt.imsave(temp_orig, img_np)
+        # IMPORTANT: img_np is RGB. OpenCV works with BGR.
+        # Convert to BGR for overlay and final save
+        img_bgr = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
         
         # Overlay heatmap
-        overlay = overlay_heatmap(temp_orig, heatmap)
+        # Pass the BGR image directly to overlay_heatmap
+        overlay = overlay_heatmap(img_bgr, heatmap)
         
         # Save final result
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cv2.imwrite(output_path, overlay)
         print(f"Success! Prediction heatmap saved to: {output_path}")
-
-        # Clean up
-        if os.path.exists(temp_orig):
-            os.remove(temp_orig)
 
         # Print confidence
         with torch.no_grad():
