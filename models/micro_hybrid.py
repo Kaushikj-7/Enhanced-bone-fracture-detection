@@ -3,6 +3,22 @@ import torch.nn as nn
 import torchvision.models as models
 import math
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x: [B, N, D]
+        x = x + self.pe[:, :x.size(1), :]
+        return x
+
 class FractureEnhancementBlock(nn.Module):
     """
     Specifically designed to fix errors in finding cracks and hairline fractures.
@@ -42,6 +58,7 @@ class MicroTransformer(nn.Module):
     """
     def __init__(self, input_dim, depth=2, heads=4, dim_feedforward=256):
         super(MicroTransformer, self).__init__()
+        self.pos_encoder = PositionalEncoding(input_dim)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=input_dim, 
             nhead=heads, 
@@ -56,6 +73,8 @@ class MicroTransformer(nn.Module):
         b, c, h, w = x.shape
         # Flatten to [B, H*W, C]
         x = x.flatten(2).permute(0, 2, 1)
+        # Add Positional Encoding
+        x = self.pos_encoder(x)
         x = self.transformer(x)
         # Restore to [B, C, H, W]
         x = x.permute(0, 2, 1).reshape(b, c, h, w)

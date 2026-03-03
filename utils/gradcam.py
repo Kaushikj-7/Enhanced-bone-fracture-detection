@@ -3,13 +3,11 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-
 class GradCAM:
     """
     Grad-CAM implementation for interpretability.
     Typically targeted at the last convolutional layer of the CNN branch.
     """
-
     def __init__(self, model, target_layer):
         self.model = model
         self.target_layer = target_layer
@@ -32,37 +30,41 @@ class GradCAM:
             self.activations = output
 
     def save_gradient(self, module, grad_input, grad_output):
-        # grad_output is usually a tuple where index 0 is the gradient w.r.t the output
-        if isinstance(grad_output[0], tuple):
-            self.gradients = grad_output[0][0]
-        else:
-            self.gradients = grad_output[0]
+        # grad_output is a tuple containing the gradient w.r.t the output
+        self.gradients = grad_output[0]
 
     def generate_cam(self, input_image, target_class=None):
+        """
+        Generates the Grad-CAM heatmap.
+        """
+        # Ensure model and input are on same device
+        device = next(self.model.parameters()).device
+        input_image = input_image.to(device)
+
         # Forward pass
-        output = self.model(input_image)
-        print(f"Model output shape: {output.shape}")
-
-        if target_class is None:
-            target_class = 0
-
-        # Zero gradients
         self.model.zero_grad()
+        output = self.model(input_image)
+        
+        if target_class is None:
+            # Target the logit directly for binary classification
+            target_class_idx = 0
+        else:
+            target_class_idx = target_class
 
         # Backward pass
         output.backward(retain_graph=True)
         
-        if self.gradients is None:
-            print("ERROR: Gradients were not captured by hook!")
+        if self.gradients is None or self.activations is None:
+            print("ERROR: Gradients or Activations were not captured!")
             return np.zeros((input_image.shape[2], input_image.shape[3]))
         
-        print(f"Gradients captured: shape={self.gradients.shape}, mean={self.gradients.mean().item():.6f}")
-        print(f"Activations captured: shape={self.activations.shape}, mean={self.activations.mean().item():.6f}")
-
         # Pool the gradients across the channels
+        # Gradients shape: [B, C, H, W]
+        # We take the mean across H and W dimensions
         pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])
 
         # Weight the channels by corresponding gradients
+        # Activations shape: [B, C, H, W]
         activations = self.activations.detach()
         for i in range(activations.shape[1]):
             activations[:, i, :, :] *= pooled_gradients[i]
@@ -80,14 +82,12 @@ class GradCAM:
 
         return heatmap.numpy()
 
-
-def overlay_heatmap(img, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
+def overlay_heatmap(img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
     """
     Overlays a heatmap on an image.
-    :param img: Path to image or image array (numpy). If array, assumed to be BGR or RGB depending on source.
+    :param img: Path to image or BGR image array (numpy).
     :param heatmap: 2D numpy array of the heatmap.
     :param alpha: Transparency of the heatmap.
-    :param colormap: OpenCV colormap.
     :return: BGR image with overlay.
     """
     if isinstance(img, str):
@@ -102,11 +102,6 @@ def overlay_heatmap(img, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
     # Resize heatmap to match image size
     heatmap = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
 
-    # Normalize heatmap for visualization
-    heatmap = np.maximum(heatmap, 0)
-    if np.max(heatmap) > 0:
-        heatmap = heatmap / np.max(heatmap)
-    
     # Convert heatmap to BGR using the specified colormap
     heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), colormap)
 
