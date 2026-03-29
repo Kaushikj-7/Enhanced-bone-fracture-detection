@@ -10,6 +10,8 @@ def _resolve_weights(model_fn_name: str, pretrained: bool):
     # Torchvision >=0.13 uses explicit Weights enums.
     if model_fn_name == "resnet18":
         return getattr(models, "ResNet18_Weights").DEFAULT
+    if model_fn_name == "resnet34":
+        return getattr(models, "ResNet34_Weights").DEFAULT
     if model_fn_name == "resnet50":
         return getattr(models, "ResNet50_Weights").DEFAULT
     if model_fn_name == "mobilenet_v3_small":
@@ -25,6 +27,13 @@ class CNNBranch(nn.Module):
         if backbone_name == "resnet18":
             self.backbone = models.resnet18(
                 weights=_resolve_weights("resnet18", pretrained)
+            )
+            self.out_features = self.backbone.fc.in_features
+            # Remove the classification head
+            self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
+        elif backbone_name == "resnet34":
+            self.backbone = models.resnet34(
+                weights=_resolve_weights("resnet34", pretrained)
             )
             self.out_features = self.backbone.fc.in_features
             # Remove the classification head

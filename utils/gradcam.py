@@ -36,51 +36,47 @@ class GradCAM:
     def generate_cam(self, input_image, target_class=None):
         """
         Generates the Grad-CAM heatmap.
+        For binary classification with a single output logit:
+        - If logit > 0, it predicts 'positive' (fracture).
+        - We target the logit directly.
         """
-        # Ensure model and input are on same device
         device = next(self.model.parameters()).device
         input_image = input_image.to(device)
 
-        # Forward pass
+        # Ensure gradients are enabled for the backward pass
         self.model.zero_grad()
-        output = self.model(input_image)
+        output = self.model(input_image) # [1, 1] for binary
         
-        if target_class is None:
-            # Target the logit directly for binary classification
-            target_class_idx = 0
-        else:
-            target_class_idx = target_class
-
-        # Backward pass
+        # Backward pass on the raw logit
+        # For a single logit, we just call backward() on it
         output.backward(retain_graph=True)
         
         if self.gradients is None or self.activations is None:
             print("ERROR: Gradients or Activations were not captured!")
             return np.zeros((input_image.shape[2], input_image.shape[3]))
         
-        # Pool the gradients across the channels
-        # Gradients shape: [B, C, H, W]
-        # We take the mean across H and W dimensions
-        pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])
-
-        # Weight the channels by corresponding gradients
-        # Activations shape: [B, C, H, W]
-        activations = self.activations.detach()
-        for i in range(activations.shape[1]):
-            activations[:, i, :, :] *= pooled_gradients[i]
-
-        # Average the channels of the activations
-        heatmap = torch.mean(activations, dim=1).squeeze()
-
-        # ReLU on top of the heatmap
-        heatmap = np.maximum(heatmap.cpu(), 0)
-
-        # Normalize the heatmap
+        # 1. Gradients: [1, C, H, W]
+        # 2. Activations: [1, C, H, W]
+        
+        # Global Average Pooling of gradients (Global Importance weights)
+        # We take the mean across spatial dimensions (H, W)
+        weights = torch.mean(self.gradients, dim=[2, 3]) # [1, C]
+        
+        # Linear combination of weighted activations
+        # heatmap = sum(w_i * A_i)
+        # We use Einstein summation for clean batch-wise multiplication
+        # [1, C] * [1, C, H, W] -> [1, H, W]
+        heatmap = torch.sum(weights.unsqueeze(-1).unsqueeze(-1) * self.activations, dim=1).squeeze()
+        
+        # ReLU: We only care about features that have a POSITIVE influence on the class
+        heatmap = torch.clamp(heatmap, min=0)
+        
+        # Normalize to [0, 1]
         heatmap_max = torch.max(heatmap)
-        if heatmap_max > 0:
-            heatmap /= heatmap_max
-
-        return heatmap.numpy()
+        if heatmap_max > 1e-8:
+            heatmap = heatmap / heatmap_max
+        
+        return heatmap.detach().cpu().numpy()
 
 def overlay_heatmap(img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
     """

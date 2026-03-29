@@ -10,7 +10,13 @@ from models.micro_hybrid import MicroHybridModel
 from utils.preprocessing import get_transforms
 from utils.gradcam import GradCAM, overlay_heatmap
 
-def run_single_gradcam(image_path, model_type="micro", model_path=None, output_path="outputs/single_inference_heatmap.png"):
+
+def run_single_gradcam(
+    image_path,
+    model_type="micro",
+    model_path=None,
+    output_path="outputs/single_inference_heatmap.png",
+):
     # 1. Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -24,10 +30,12 @@ def run_single_gradcam(image_path, model_type="micro", model_path=None, output_p
         else:
             model.load_state_dict(torch.load(model_path, map_location=device))
     else:
-        model = HybridModel(cnn_backbone="resnet18", vit_model="vit_tiny_patch16_224", pretrained=False)
+        model = HybridModel(
+            cnn_backbone="resnet18", vit_model="vit_tiny_patch16_224", pretrained=False
+        )
         if model_path:
             model.load_state_dict(torch.load(model_path, map_location=device))
-    
+
     model.to(device)
     model.eval()
 
@@ -43,34 +51,34 @@ def run_single_gradcam(image_path, model_type="micro", model_path=None, output_p
 
     # 4. Setup Grad-CAM
     # Dynamically resolve target layer
-    if hasattr(model, 'get_last_conv_layer'):
+    if hasattr(model, "get_last_conv_layer"):
         target_layer = model.get_last_conv_layer()
     else:
         # Fallback for standard HybridModel
         target_layer = model.cnn_branch.backbone[7][-1]
-        
+
     grad_cam = GradCAM(model=model, target_layer=target_layer)
 
     # 5. Generate Heatmap
     print(f"Processing image: {image_path}")
     try:
         heatmap = grad_cam.generate_cam(input_tensor, target_class=0)
-        
+
         # Denormalize image for visualization
         img_np = input_tensor[0].detach().cpu().permute(1, 2, 0).numpy()
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         img_np = std * img_np + mean
         img_np = np.clip(img_np, 0, 1)
-        
+
         # IMPORTANT: img_np is RGB. OpenCV works with BGR.
         # Convert to BGR for overlay and final save
         img_bgr = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-        
+
         # Overlay heatmap
         # Pass the BGR image directly to overlay_heatmap
         overlay = overlay_heatmap(img_bgr, heatmap)
-        
+
         # Save final result
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cv2.imwrite(output_path, overlay)
@@ -86,8 +94,16 @@ def run_single_gradcam(image_path, model_type="micro", model_path=None, output_p
     except Exception as e:
         print(f"Failed to generate heatmap: {e}")
         import traceback
+
         traceback.print_exc()
 
+
 if __name__ == "__main__":
-    img_path = r"C:\Users\Kaushik j\OneDrive\Documents\ipcv_project\data\MURA-v1.1\train\XR_ELBOW\patient00196\study1_positive\image3.png"
-    run_single_gradcam(img_path)
+    img_path = r"data\MURA-v1.1\valid\XR_WRIST\patient11185\study1_positive\image1.png"
+    model_path = r"outputs\micro_35min_run\micro\best_model.pth"
+    run_single_gradcam(
+        img_path,
+        model_type="micro",
+        model_path=model_path,
+        output_path="outputs/visual_test_inference.png",
+    )

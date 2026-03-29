@@ -105,6 +105,34 @@ Pass through Transformer encoder layers
 Output:
 Global feature embedding vector
 
+4.2.1 Architectural Learning Rationale (Same Input, Different Representations)
+
+Important design clarification:
+The CNN branch and ViT branch should consume the same X-ray image. They still learn different information because of different architectural inductive biases.
+
+CNN inductive bias:
+- Convolution kernels (e.g., 3×3, 5×5) enforce local receptive fields.
+- Early layers detect local structures: crack edges, micro-discontinuities, and fine texture changes.
+
+ViT inductive bias:
+- Patch tokenization + self-attention allows each patch to compare with all other patches.
+- This supports global relational reasoning: long-range alignment, structural consistency, and context-aware anomaly detection.
+
+Fusion interpretation:
+Same X-ray
+→ CNN local features
+→ ViT global context
+→ Fusion/Attention
+→ stronger fracture probability estimate
+
+Clinical example:
+- CNN may detect a thin hairline discontinuity.
+- ViT may detect subtle distal radius-carpal misalignment.
+- Combined signal is stronger than either cue alone.
+
+Key ML principle:
+Hybrid performance gain comes from **inductive bias diversity**, not from using different input data per branch.
+
 4.3 Attention Mechanism
 
 Applied after CNN + ViT feature extraction.

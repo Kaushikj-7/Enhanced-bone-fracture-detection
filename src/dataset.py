@@ -6,14 +6,17 @@ import cv2
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
+
 class AutoCrop:
     """
     Crops black borders and applies CLAHE to enhance bone density/cracks.
     """
+
     def __init__(self, threshold=15, apply_clahe=True):
         self.threshold = threshold
         self.apply_clahe = apply_clahe
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        # Don't initialize CLAHE here (causes pickling errors on Windows)
+        self._clahe = None
 
     def __call__(self, img):
         img_np = np.array(img)
@@ -21,24 +24,27 @@ class AutoCrop:
             gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_np
-            
+
         # 1. CLAHE Enhancement for cracks
         if self.apply_clahe:
-            gray = self.clahe.apply(gray)
+            if self._clahe is None:
+                self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = self._clahe.apply(gray)
             # If original was RGB, we put enhanced gray back into channels or keep as RGB?
             # Pretrained models expect 3 channels.
             img_np = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-            
+
         # 2. Find pixels above threshold
         mask = gray > self.threshold
         coords = np.argwhere(mask)
         if coords.size == 0:
             return Image.fromarray(img_np)
-            
+
         y0, x0 = coords.min(axis=0)
         y1, x1 = coords.max(axis=0) + 1
         cropped = img_np[y0:y1, x0:x1]
         return Image.fromarray(cropped)
+
 
 try:
     import kagglehub
@@ -320,74 +326,164 @@ class BoneFractureDataset(Dataset):
 
 from utils.advanced_preprocessing import AdvancedFracturePreprocessor
 
-def get_transforms(split):
-    # Standard ImageNet normalization figures for our 3-channel stack
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+
+class VerifiedFracturePreprocessor:
+    """
+    Enforces a strict input contract for the model:
+    - PIL RGB image
+    - Fixed spatial size (default 224x224)
+    - Numeric-safe uint8 content
+
+    If advanced preprocessing fails or returns an invalid shape/type,
+    this wrapper falls back to a deterministic safe RGB resize so the
+    training/inference pipeline can continue with valid tensors.
+    """
+
+    def __init__(self, target_size=(224, 224), apply_frangi=True, apply_wavelet=True):
+        self.target_size = target_size
+        self.preprocessor = AdvancedFracturePreprocessor(
+            target_size=target_size,
+            apply_frangi=apply_frangi,
+            apply_wavelet=apply_wavelet,
+        )
+
+    def _safe_fallback(self, pil_img):
+        arr = np.array(pil_img.convert("RGB"))
+        arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        arr = cv2.resize(arr, self.target_size, interpolation=cv2.INTER_AREA)
+        return Image.fromarray(arr, mode="RGB")
+
+    def _validate_or_fix(self, out_img):
+        if not isinstance(out_img, Image.Image):
+            raise ValueError("Preprocessor output is not a PIL image.")
+
+        if out_img.mode != "RGB":
+            out_img = out_img.convert("RGB")
+
+        if out_img.size != self.target_size:
+            out_img = out_img.resize(self.target_size, Image.BILINEAR)
+
+        arr = np.array(out_img)
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            raise ValueError(f"Invalid output shape: {arr.shape}")
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr, mode="RGB")
+
+    def __call__(self, pil_img):
+        try:
+            out = self.preprocessor(pil_img)
+            return self._validate_or_fix(out)
+        except Exception:
+            return self._safe_fallback(pil_img)
+
+
+def get_transforms(split, simple_pre=False):
+    # FAST GPU MODE: CPU only does Sanitization + Crop + Resize
+    # Everything mathematical (Normalize, Wavelet, Ridge) is moved to CUDA
+
+    # If simple_pre is True, we disable Wavelet and Frangi to reduce noise
+    apply_wavelet = not simple_pre
+    apply_frangi = not simple_pre
+
+    preprocessor = VerifiedFracturePreprocessor(
+        target_size=(224, 224), apply_frangi=apply_frangi, apply_wavelet=apply_wavelet
     )
 
     if split == "train":
         return transforms.Compose(
             [
-                AdvancedFracturePreprocessor(target_size=(224, 224)),
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(30),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(degrees=10),
                 transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
+                preprocessor,
                 transforms.ToTensor(),
-                transforms.RandomErasing(p=0.2, scale=(0.02, 0.08)),
-                normalize,
+                # Normalize is now on GPU
             ]
         )
     else:
         # Validation/Test
         return transforms.Compose(
             [
-                AdvancedFracturePreprocessor(target_size=(224, 224)),
+                preprocessor,
                 transforms.ToTensor(),
-                normalize,
             ]
         )
 
 
-def get_dataloaders(data_dir, batch_size=16, num_workers=4):
-    # Only use num_workers=0 on Windows to avoid multiprocessing issues in simple scripts
-    if os.name == "nt":
-        num_workers = 0
+def get_dataloaders(data_dir, batch_size=16, num_workers=4, simple_pre=False):
+    import torch
 
-    # Auto-download if needed (using 'train' split as trigger)
+    pin_memory = torch.cuda.is_available()
+
+    if os.name == "nt":
+        num_workers = min(num_workers, 2)
+
     download_flag = False
     if not os.path.exists(os.path.join(data_dir, "train")) and not os.path.exists(
         os.path.join(data_dir, "MURA-v1.1")
     ):
-        # Check if empty or missing, might want to trigger download
-        # We trigger download only on the first dataset init
         download_flag = True
 
     datasets = {}
-
-    # Initialize train set first to handle potential download
     datasets["train"] = BoneFractureDataset(
         data_dir,
         split="train",
-        transform=get_transforms("train"),
+        transform=get_transforms("train", simple_pre=simple_pre),
         download=download_flag,
     )
 
-    # Init others without download flag (it's already done or checked)
     for x in ["val", "test"]:
         datasets[x] = BoneFractureDataset(
-            data_dir, split=x, transform=get_transforms(x), download=False
+            data_dir,
+            split=x,
+            transform=get_transforms(x, simple_pre=simple_pre),
+            download=False,
         )
 
     dataloaders = {}
     for x in ["train", "val", "test"]:
         if len(datasets[x]) > 0:
-            dataloaders[x] = DataLoader(
-                datasets[x],
-                batch_size=batch_size,
-                shuffle=(x == "train"),
-                num_workers=num_workers,
-            )
+            if x == "train":
+                from torch.utils.data import WeightedRandomSampler
+                from collections import Counter
+
+                labels = [item[1] for item in datasets[x].samples]
+                counts = Counter(labels)
+                class_weights = {cls: 1.0 / count for cls, count in counts.items()}
+                sample_weights = [class_weights[label] for label in labels]
+
+                sampler = WeightedRandomSampler(
+                    weights=sample_weights,
+                    num_samples=len(sample_weights),
+                    replacement=True,
+                )
+
+                dataloaders[x] = DataLoader(
+                    datasets[x],
+                    batch_size=batch_size,
+                    sampler=sampler,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    persistent_workers=(
+                        num_workers > 0
+                    ),  # Keep workers alive between epochs
+                    prefetch_factor=2 if num_workers > 0 else None,  # Buffer batches
+                )
+            else:
+                dataloaders[x] = DataLoader(
+                    datasets[x],
+                    batch_size=batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    persistent_workers=(
+                        num_workers > 0
+                    ),  # Keep workers alive between epochs
+                    prefetch_factor=2 if num_workers > 0 else None,  # Buffer batches
+                )
         else:
             print(f"Warning: Dataset split '{x}' is empty.")
             dataloaders[x] = []

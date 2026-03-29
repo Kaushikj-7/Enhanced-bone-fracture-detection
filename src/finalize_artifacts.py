@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
@@ -38,8 +39,31 @@ def _build_model(name: str, cnn_backbone: str, vit_backbone: str, pretrained: bo
         )
     if name == "micro":
         from models.micro_hybrid import MicroHybridModel
+
         return MicroHybridModel(pretrained=pretrained)
     raise ValueError(f"Unknown experiment: {name}")
+
+
+class _LimitedLoader:
+    def __init__(self, loader, max_batches: int):
+        self.loader = loader
+        self.max_batches = max_batches
+
+    def __iter__(self):
+        for idx, batch in enumerate(self.loader):
+            if idx >= self.max_batches:
+                break
+            yield batch
+
+    def __len__(self):
+        return min(len(self.loader), self.max_batches)
+
+
+def _maybe_limit_loader(loader, max_batches: int):
+    if not loader or max_batches <= 0:
+        return loader
+    return _LimitedLoader(loader, max_batches)
+
 
 def load_checkpoint(model, path):
     if not os.path.exists(path):
@@ -55,12 +79,13 @@ def load_checkpoint(model, path):
         print(f"Error loading checkpoint {path}: {e}")
     return model
 
-def evaluate_model(model, loader, device, output_dir, exp_name):
+
+def evaluate_model(model, loader, device, output_dir, exp_name, split_name):
     model.eval()
     all_preds = []
     all_labels = []
 
-    print(f"Evaluating {exp_name}...")
+    print(f"Evaluating {exp_name} on {split_name}...")
     with torch.no_grad():
         for inputs, labels in tqdm(loader, desc=f"Eval {exp_name}"):
             inputs = inputs.to(device)
@@ -81,11 +106,16 @@ def evaluate_model(model, loader, device, output_dir, exp_name):
 
     # Save raw predictions
     df = pd.DataFrame({"label": all_labels, "prob": all_preds})
-    df.to_csv(os.path.join(output_dir, f"{exp_name}_predictions.csv"), index=False)
+    df.to_csv(
+        os.path.join(output_dir, f"{exp_name}_{split_name}_predictions.csv"),
+        index=False,
+    )
 
     # Check if we have enough distinct labels for ROC
     if len(np.unique(all_labels)) < 2:
-        print(f"Skipping ROC for {exp_name}: only one class present in val set.")
+        print(
+            f"Skipping ROC for {exp_name} on {split_name}: only one class present in this split."
+        )
         return all_preds, all_labels
 
     # ROC Curve
@@ -101,9 +131,9 @@ def evaluate_model(model, loader, device, output_dir, exp_name):
     plt.ylim([0.0, 1.05])
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title(f"ROC - {exp_name} (AUC={roc_auc:.2f})")
+    plt.title(f"ROC - {exp_name} [{split_name}] (AUC={roc_auc:.2f})")
     plt.legend(loc="lower right")
-    plt.savefig(os.path.join(output_dir, f"{exp_name}_roc.png"))
+    plt.savefig(os.path.join(output_dir, f"{exp_name}_{split_name}_roc.png"))
     plt.close()
 
     # Confusion Matrix (Threshold 0.5)
@@ -112,20 +142,23 @@ def evaluate_model(model, loader, device, output_dir, exp_name):
 
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    plt.title(f"Confusion Matrix - {exp_name}")
+    plt.title(f"Confusion Matrix - {exp_name} [{split_name}]")
     plt.ylabel("True Label")
     plt.xlabel("Predicted Label")
-    plt.savefig(os.path.join(output_dir, f"{exp_name}_cm.png"))
+    plt.savefig(os.path.join(output_dir, f"{exp_name}_{split_name}_cm.png"))
     plt.close()
 
     # Classification Report
     cr = classification_report(
         all_labels, preds_binary, output_dict=True, zero_division=0
     )
-    with open(os.path.join(output_dir, f"{exp_name}_metrics.json"), "w") as f:
+    with open(
+        os.path.join(output_dir, f"{exp_name}_{split_name}_metrics.json"), "w"
+    ) as f:
         json.dump(cr, f, indent=4)
 
     return all_preds, all_labels
+
 
 def get_target_layer(model, exp_name):
     # Determine the target layer for GradCAM based on model type
@@ -149,7 +182,7 @@ def get_target_layer(model, exp_name):
     return None
 
 
-def run_gradcam(model, loader, device, output_dir, exp_name, num_images=5):
+def run_gradcam(model, loader, device, output_dir, exp_name, split_name, num_images=5):
     if not GRADCAM_AVAILABLE:
         return
 
@@ -158,8 +191,8 @@ def run_gradcam(model, loader, device, output_dir, exp_name, num_images=5):
         print(f"Skipping GradCAM for {exp_name} (no suitable target layer found).")
         return
 
-    print(f"Generating GradCAM for {exp_name}...")
-    cam_dir = os.path.join(output_dir, f"{exp_name}_gradcam")
+    print(f"Generating GradCAM for {exp_name} on {split_name}...")
+    cam_dir = os.path.join(output_dir, f"{exp_name}_gradcam_{split_name}")
     os.makedirs(cam_dir, exist_ok=True)
 
     # Initialize GradCAM
@@ -190,8 +223,8 @@ def run_gradcam(model, loader, device, output_dir, exp_name, num_images=5):
                     # For custom GradCAM, input must require grad?
                     input_tensor.requires_grad = True
                     heatmap = grad_cam.generate_cam(
-                        input_tensor, target_class=1
-                    )  # Target 'positive' class
+                        input_tensor, target_class=None
+                    )  # Target the raw logit for binary
 
                 # Prepare image for overlay
                 img_np = inputs[i].cpu().detach().permute(1, 2, 0).numpy()
@@ -202,13 +235,17 @@ def run_gradcam(model, loader, device, output_dir, exp_name, num_images=5):
                 img_np = np.clip(img_np, 0, 1)
 
                 # Convert RGB to BGR for OpenCV overlay
-                img_bgr = cv2.cvtColor((img_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+                img_bgr = cv2.cvtColor(
+                    (img_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR
+                )
 
                 # Use overlay_heatmap directly with BGR image
                 overlay = overlay_heatmap(img_bgr, heatmap)
 
                 # Save final visualization
-                save_path = os.path.join(cam_dir, f"cam_{count}_label_{labels[i]}.png")
+                save_path = os.path.join(
+                    cam_dir, f"cam_{count}_{split_name}_label_{labels[i]}.png"
+                )
                 cv2.imwrite(save_path, overlay)
 
                 count += 1
@@ -230,22 +267,35 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--num_gradcam", type=int, default=5)
+    parser.add_argument(
+        "--max_eval_batches",
+        type=int,
+        default=0,
+        help="Limit evaluation/GradCAM batches per split (0 = full)",
+    )
+    parser.add_argument(
+        "--splits",
+        default="val,test",
+        help="Comma-separated splits to evaluate, e.g. val or val,test",
+    )
 
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     experiments = args.experiments.split(",")
 
-    # Load Validation Data
+    # Load Data
     dataloaders, _ = get_dataloaders(
         args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers
     )
 
-    if "val" not in dataloaders:
-        print("No validation set found. Cannot finalize artifacts.")
-        return
-
-    val_loader = dataloaders["val"]
+    requested_splits = [s.strip() for s in args.splits.split(",") if s.strip()]
+    valid_splits = {"val", "test"}
+    for split_name in requested_splits:
+        if split_name not in valid_splits:
+            raise ValueError(
+                f"Unsupported split '{split_name}'. Allowed splits: val,test"
+            )
 
     for exp in experiments:
         exp_dir = os.path.join(args.output_dir, exp)
@@ -267,24 +317,28 @@ def main():
         model = load_checkpoint(model, model_path)
         model = model.to(device)
 
-        # Evaluation
-        evaluate_model(
-            model, val_loader, device, exp_dir, exp
-        )  # Pass exp_dir not args.output_dir so files go INTO exp folder
+        for split_name in requested_splits:
+            split_loader = dataloaders.get(split_name)
+            if not split_loader or len(split_loader) == 0:
+                print(f"Skipping {exp} [{split_name}]: split is unavailable or empty.")
+                continue
 
-        # GradCAM
-        if args.num_gradcam > 0:
-            run_gradcam(
-                model,
-                val_loader,
-                device,
-                args.output_dir,
-                exp,
-                num_images=args.num_gradcam,
-            )  # args.output_dir here creates exp_gradcam folder?
-            # Actually, let's put gradcam inside the exp folder too or root output?
-            # Current logic: `cam_dir = os.path.join(output_dir, f'{exp_name}_gradcam')`
-            # This puts `cnn_gradcam`, `vit_gradcam` in `outputs/`. That's fine.
+            split_loader = _maybe_limit_loader(split_loader, args.max_eval_batches)
+
+            # Evaluation
+            evaluate_model(model, split_loader, device, exp_dir, exp, split_name)
+
+            # GradCAM
+            if args.num_gradcam > 0:
+                run_gradcam(
+                    model,
+                    split_loader,
+                    device,
+                    args.output_dir,
+                    exp,
+                    split_name,
+                    num_images=args.num_gradcam,
+                )
 
     print("Done finalizing artifacts.")
 
