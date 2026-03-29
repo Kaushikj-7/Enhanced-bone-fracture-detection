@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from .cnn_branch import CNNBranch
 from .vit_branch import ViTBranch
-from .attention import AttentionModule
+from .attention import AttentionModule, FractureInterpretabilityFusion
+from .lora import inject_lora
 
 class FractureEnhancementBlock(nn.Module):
     """
@@ -41,8 +42,6 @@ class FractureEnhancementBlock(nn.Module):
         out = torch.cat([b1, b2, b3, b4], dim=1)
         out = self.relu(self.bn(self.fuse(out) + x))
         return out
-
-from .lora import inject_lora
 
 class HybridModel(nn.Module):
     def __init__(
@@ -83,16 +82,20 @@ class HybridModel(nn.Module):
                 target_modules=["qkv", "fc1", "fc2", "proj"]
             )
 
-        # Bottleneck Projections
-        self.bottleneck_dim = 256
-        self.cnn_proj = nn.Conv2d(self.cnn_out_dim, self.bottleneck_dim, kernel_size=1)
-        self.vit_proj = nn.Conv2d(self.vit_branch.out_features, self.bottleneck_dim, kernel_size=1)
-        
-        combined_dim = self.bottleneck_dim * 2
-        self.attention = AttentionModule(input_dim=combined_dim)
+        # 3. INTERPRETABILITY FUSION LAYER
+        # This layer replaces simple concatenation and is the EXCLUSIVE target for Grad-CAM
+        self.fusion_dim = 256
+        self.fusion_layer = FractureInterpretabilityFusion(
+            cnn_dim=self.cnn_out_dim, 
+            vit_dim=self.vit_branch.out_features,
+            fusion_dim=self.fusion_dim
+        )
+
+        # 4. Attention and Classification
+        self.attention = AttentionModule(input_dim=self.fusion_dim)
 
         self.classifier = nn.Sequential(
-            nn.Linear(combined_dim, 256),
+            nn.Linear(self.fusion_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.4),
@@ -111,29 +114,26 @@ class HybridModel(nn.Module):
         for param in self.vit_branch.parameters():
             param.requires_grad = False
         
-        # UNFREEZE LoRA parameters in ViT (they are nn.Parameters created in LoRALinear)
-        # We need to explicitly find them if vit_branch was frozen
+        # UNFREEZE LoRA parameters in ViT
         for name, param in self.vit_branch.named_parameters():
             if "lora_" in name:
                 param.requires_grad = True
         
-        # Ensure Enhancer, Head and Attention are trainable
+        # Ensure Enhancer, Fusion, Head and Attention are trainable
         for param in self.enhancer.parameters():
+            param.requires_grad = True
+        for param in self.fusion_layer.parameters():
             param.requires_grad = True
         for param in self.attention.parameters():
             param.requires_grad = True
         for param in self.classifier.parameters():
             param.requires_grad = True
-        for param in self.cnn_proj.parameters():
-            param.requires_grad = True
-        for param in self.vit_proj.parameters():
-            param.requires_grad = True
 
     def unfreeze_stage(self, stage: int):
         """
-        Stage 0: LoRA adapters + Enhancer + Head (Low compute)
-        Stage 1: Unfreeze Late CNN (Higher compute)
-        Stage 2: Unfreeze Early CNN + Original ViT weights (Full compute)
+        Stage 0: LoRA adapters + Enhancer + Fusion + Head
+        Stage 1: Unfreeze Late CNN
+        Stage 2: Full Transfer Learning enabled.
         """
         if stage >= 1:
             for param in self.cnn_late.parameters():
@@ -155,16 +155,11 @@ class HybridModel(nn.Module):
         # ViT Stream
         vit_feat = self.vit_branch(x)
         
-        # Project and Fuse
-        cnn_feat = self.cnn_proj(cnn_feat)
-        vit_feat = self.vit_proj(vit_feat)
+        # Advanced Interpretability Fusion
+        fused_feat, gate_weights = self.fusion_layer(cnn_feat, vit_feat)
         
-        # Match spatial dims
-        vh, vw = vit_feat.shape[2], vit_feat.shape[3]
-        cnn_feat_up = nn.functional.interpolate(cnn_feat, size=(vh, vw), mode="bilinear")
-        
-        fused = torch.cat((cnn_feat_up, vit_feat), dim=1)
-        attended, _ = self.attention(fused)
+        # Refinement Attention
+        attended, _ = self.attention(fused_feat)
         
         pooled = torch.mean(attended, dim=[2, 3])
         return self.classifier(pooled)
@@ -172,7 +167,6 @@ class HybridModel(nn.Module):
     def get_last_conv_layer(self):
         """
         Used for Grad-CAM.
-        We target the attention module which is the final spatial feature map before pooling.
-        This captures the combined local (CNN) and global (ViT) influence.
+        We target the output of our specialized interpretability fusion layer.
         """
-        return self.attention
+        return self.fusion_layer.output_conv
