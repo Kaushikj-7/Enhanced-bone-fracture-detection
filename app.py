@@ -1,0 +1,80 @@
+from fastapi import FastAPI, File, UploadFile
+import torch
+from PIL import Image
+import io
+import os
+import sys
+import numpy as np
+import cv2
+
+# Add project root to sys.path
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+from models.hybrid_model import HybridModel
+from utils.preprocessing import get_transforms
+
+app = FastAPI()
+
+# Model configuration
+MODEL_PATH = "trained_models/outputs/plan_fast_compare/hybrid/best_model.pth"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Global model instance
+model = None
+
+@app.on_event("startup")
+def load_model():
+    global model
+    print(f"Loading model from {MODEL_PATH}...")
+    model = HybridModel(
+        cnn_backbone="resnet18",
+        vit_model="vit_base_patch16_224",
+        pretrained=False,
+        use_lora=True
+    )
+    
+    if os.path.exists(MODEL_PATH):
+        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.load_state_dict(checkpoint)
+    else:
+        print(f"Warning: Model weights not found at {MODEL_PATH}")
+    
+    model.to(DEVICE)
+    model.eval()
+    print("Model loaded successfully.")
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    # 1. Read image
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    
+    # 2. Preprocess
+    transform = get_transforms(mode="val")
+    input_tensor = transform(image).unsqueeze(0).to(DEVICE)
+    
+    # 3. Inference
+    with torch.no_grad():
+        logits = model(input_tensor)
+        prob = torch.sigmoid(logits).item()
+    
+    prediction = "FRACTURE" if prob > 0.5 else "NORMAL"
+    
+    return {
+        "prediction": prediction,
+        "probability": prob,
+        "status": "success"
+    }
+
+@app.get("/")
+def read_root():
+    return {"message": "Bone Fracture Detection API is running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
