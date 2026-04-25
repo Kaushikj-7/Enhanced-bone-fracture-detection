@@ -27,6 +27,7 @@ STRICT_MODEL_LOAD = os.getenv("STRICT_MODEL_LOAD", "false").lower() in (
     "true",
     "yes",
 )
+# Seconds to wait for background model loading before returning a 503.
 MODEL_LOAD_TIMEOUT = float(os.getenv("MODEL_LOAD_TIMEOUT", "30"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -42,6 +43,8 @@ def start_background_model_loading():
         if model_load_complete.is_set():
             return
         if model_thread is None or not model_thread.is_alive():
+            if model_load_complete.is_set():
+                return
             model_thread = threading.Thread(target=load_model, daemon=True)
             model_thread.start()
 
@@ -105,13 +108,12 @@ def load_model():
         model_load_complete.set()
 
 def get_model():
-    if not model_load_complete.is_set():
-        start_background_model_loading()
-        if not model_load_complete.wait(timeout=MODEL_LOAD_TIMEOUT):
-            raise HTTPException(
-                status_code=503,
-                detail="Model is still loading. Please retry shortly."
-            )
+    start_background_model_loading()
+    if not model_load_complete.wait(timeout=MODEL_LOAD_TIMEOUT):
+        raise HTTPException(
+            status_code=503,
+            detail="Model is still loading. Please retry shortly."
+        )
     if model_load_error is not None:
         raise HTTPException(
             status_code=503,
