@@ -1,5 +1,0 @@
-filename,true_label,pred_label,probability,status,result_image
-pos_04.png,fracture,fracture,0.5338551998138428,CORRECT,res_pos_04.png
-pos_03.png,fracture,fracture,0.5187699794769287,CORRECT,res_pos_03.png
-neg_04.png,normal,normal,0.332749456167221,CORRECT,res_neg_04.png
-neg_01.png,normal,normal,0.337087482213974,CORRECT,res_neg_01.png
