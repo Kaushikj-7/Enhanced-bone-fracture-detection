@@ -49,3 +49,4 @@ python main.py --experiments hybrid
   - `docs/PROGRESS.md`
   - `docs/PROJECT_CHECKLIST.md`
   - `docs/instruction.md`
+- Demo scripts, demo datasets, and test files are maintained in the `demo-files` branch.
