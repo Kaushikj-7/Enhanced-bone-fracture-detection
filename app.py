@@ -21,6 +21,11 @@ app = FastAPI()
 # Path mirrors existing training artifact layout in this repository.
 DEFAULT_MODEL_PATH = "trained_models/outputs/micro_pipeline_run/micro/best_model.pth"
 MODEL_PATH = os.getenv("MODEL_PATH", DEFAULT_MODEL_PATH)
+STRICT_MODEL_LOAD = os.getenv("STRICT_MODEL_LOAD", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Global model instance
@@ -33,7 +38,9 @@ def load_model():
     model = MicroHybridModel(num_classes=1, pretrained=False)
 
     active_model_path = MODEL_PATH
-    if not os.path.exists(active_model_path) and MODEL_PATH != DEFAULT_MODEL_PATH and os.path.exists(DEFAULT_MODEL_PATH):
+    custom_path_missing = MODEL_PATH != DEFAULT_MODEL_PATH and not os.path.exists(MODEL_PATH)
+    fallback_available = os.path.exists(DEFAULT_MODEL_PATH)
+    if custom_path_missing and fallback_available:
         print(
             f"Warning: MODEL_PATH not found ({MODEL_PATH}). Falling back to default weights at {DEFAULT_MODEL_PATH}."
         )
@@ -41,13 +48,13 @@ def load_model():
 
     if os.path.exists(active_model_path):
         checkpoint = torch.load(active_model_path, map_location=DEVICE)
-        # strict=False keeps compatibility if checkpoint format/keys vary across runs.
+        # strict mode is configurable; default is compatibility mode for historical checkpoints.
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             load_result = model.load_state_dict(
-                checkpoint["model_state_dict"], strict=False
+                checkpoint["model_state_dict"], strict=STRICT_MODEL_LOAD
             )
         else:
-            load_result = model.load_state_dict(checkpoint, strict=False)
+            load_result = model.load_state_dict(checkpoint, strict=STRICT_MODEL_LOAD)
 
         if load_result.missing_keys or load_result.unexpected_keys:
             missing_preview = load_result.missing_keys[:5]
