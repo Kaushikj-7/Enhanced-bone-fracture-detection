@@ -35,3 +35,14 @@ For easy execution, use the provided Google Colab notebook:
 pip install -r requirements.txt
 python main.py --experiments hybrid
 ```
+
+## GCP Cloud Run Deployment
+1. Build and deploy with Cloud Build:
+```bash
+gcloud builds submit --config cloudbuild.yaml
+```
+
+2. Or deploy with a Cloud Run service manifest (replace `PROJECT_ID` in the file):
+```bash
+gcloud run services replace cloudrun.service.yaml --region europe-west1
+```
