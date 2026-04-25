@@ -18,10 +18,8 @@ from utils.preprocessing import get_transforms
 app = FastAPI()
 
 # Model configuration (constraint-friendly Cloud Run default)
-MODEL_PATH = os.getenv(
-    "MODEL_PATH",
-    "trained_models/outputs/micro_pipeline_run/micro/best_model.pth",
-)
+DEFAULT_MODEL_PATH = "trained_models/outputs/micro_pipeline_run/micro/best_model.pth"
+MODEL_PATH = os.getenv("MODEL_PATH", DEFAULT_MODEL_PATH)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Global model instance
@@ -36,11 +34,26 @@ def load_model():
     if os.path.exists(MODEL_PATH):
         checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+            load_result = model.load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )
         else:
-            model.load_state_dict(checkpoint, strict=False)
+            load_result = model.load_state_dict(checkpoint, strict=False)
+
+        if load_result.missing_keys or load_result.unexpected_keys:
+            print(
+                "Warning: checkpoint loaded with key mismatches "
+                f"(missing={len(load_result.missing_keys)}, "
+                f"unexpected={len(load_result.unexpected_keys)})."
+            )
     else:
-        print(f"Warning: Model weights not found at {MODEL_PATH}")
+        if MODEL_PATH != DEFAULT_MODEL_PATH:
+            print(
+                f"Warning: MODEL_PATH env var points to a missing file: {MODEL_PATH}. "
+                f"Default path is {DEFAULT_MODEL_PATH}"
+            )
+        else:
+            print(f"Warning: Default model weights not found at {MODEL_PATH}")
     
     model.to(DEVICE)
     model.eval()
