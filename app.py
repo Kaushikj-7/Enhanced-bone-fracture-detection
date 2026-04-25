@@ -36,7 +36,7 @@ model_load_error = None
 model_lock = threading.Lock()
 model_thread = None
 
-def start_model_thread():
+def start_background_model_loading():
     global model_thread
     with model_lock:
         if model_load_complete.is_set():
@@ -47,8 +47,6 @@ def start_model_thread():
 
 def load_model():
     global model, model_load_error
-    if model_load_complete.is_set():
-        return
     with model_lock:
         if model_load_complete.is_set():
             return
@@ -110,8 +108,8 @@ def load_model():
 
 def get_model():
     if not model_load_complete.is_set():
-        start_model_thread()
-        if not model_load_complete.is_set():
+        start_background_model_loading()
+        if not model_load_complete.wait(timeout=0.1):
             raise HTTPException(
                 status_code=503,
                 detail="Model is still loading. Please retry shortly."
@@ -129,8 +127,8 @@ def get_model():
     return model
 
 @app.on_event("startup")
-def warm_model():
-    start_model_thread()
+def start_background_model_load():
+    start_background_model_loading()
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
