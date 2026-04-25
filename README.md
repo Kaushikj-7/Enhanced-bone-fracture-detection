@@ -50,3 +50,14 @@ python main.py --experiments hybrid
   - `docs/PROJECT_CHECKLIST.md`
   - `docs/instruction.md`
 - Demo scripts, demo datasets, and test files are maintained in the `demo-files` branch.
+
+## GCP Cloud Run Deployment
+1. Build and deploy with Cloud Build:
+```bash
+gcloud builds submit --config cloudbuild.yaml
+```
+
+2. Or deploy with a Cloud Run service manifest (replace `PROJECT_ID` in the file):
+```bash
+gcloud run services replace cloudrun.service.yaml --region europe-west1
+```

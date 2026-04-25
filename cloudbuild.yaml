@@ -1,0 +1,30 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "$_IMAGE_URI", "."]
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "$_IMAGE_URI"]
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+      [
+        "run",
+        "deploy",
+        "$_SERVICE",
+        "--image",
+        "$_IMAGE_URI",
+        "--region",
+        "$_REGION",
+        "--platform",
+        "managed",
+        "--allow-unauthenticated",
+        "--memory",
+        "512Mi",
+        "--cpu",
+        "1",
+      ]
+images:
+  - "$_IMAGE_URI"
+substitutions:
+  _SERVICE: "deploy"
+  _REGION: "europe-west1"
+  _IMAGE_URI: "gcr.io/$PROJECT_ID/enhanced-bone-fracture-detection:latest"
