@@ -31,16 +31,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = None
 model_ready = threading.Event()
+model_load_complete = threading.Event()
 model_load_error = None
 model_lock = threading.Lock()
 model_thread = None
 
 def load_model():
     global model, model_load_error
-    if model_ready.is_set() or model_load_error:
+    if model_load_complete.is_set():
         return
     with model_lock:
-        if model_ready.is_set() or model_load_error:
+        if model_load_complete.is_set():
             return
         try:
             print(f"Loading model from {MODEL_PATH}...")
@@ -95,9 +96,12 @@ def load_model():
         except Exception as exc:
             model_load_error = exc
             print(f"Error loading model: {exc}")
+        finally:
+            model_load_complete.set()
 
 def get_model():
-    load_model()
+    if not model_load_complete.is_set():
+        load_model()
     if model_load_error is not None:
         raise HTTPException(
             status_code=503,
@@ -113,9 +117,10 @@ def get_model():
 @app.on_event("startup")
 def warm_model():
     global model_thread
-    if model_thread is None or not model_thread.is_alive():
-        model_thread = threading.Thread(target=load_model, daemon=True)
-        model_thread.start()
+    with model_lock:
+        if model_thread is None or not model_thread.is_alive():
+            model_thread = threading.Thread(target=load_model, daemon=True)
+            model_thread.start()
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
