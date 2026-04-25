@@ -18,6 +18,7 @@ from utils.preprocessing import get_transforms
 app = FastAPI()
 
 # Model configuration (constraint-friendly Cloud Run default)
+# Path mirrors existing training artifact layout in this repository.
 DEFAULT_MODEL_PATH = "trained_models/outputs/micro_pipeline_run/micro/best_model.pth"
 MODEL_PATH = os.getenv("MODEL_PATH", DEFAULT_MODEL_PATH)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,6 +34,7 @@ def load_model():
     
     if os.path.exists(MODEL_PATH):
         checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+        # strict=False keeps compatibility if checkpoint format/keys vary across runs.
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             load_result = model.load_state_dict(
                 checkpoint["model_state_dict"], strict=False
