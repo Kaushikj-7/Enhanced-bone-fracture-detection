@@ -35,3 +35,17 @@ For easy execution, use the provided Google Colab notebook:
 pip install -r requirements.txt
 python main.py --experiments hybrid
 ```
+
+## Repository Organization
+- Core entry points remain at the root (for backward compatibility), including `main.py`, `inference.py`, and `app.py`.
+- Architecture and pipeline code is organized under:
+  - `models/`
+  - `training/`
+  - `utils/`
+  - `src/`
+- Reference and project-tracking documents are now in `docs/`:
+  - `docs/MODEL_REPORT.md`
+  - `docs/OPTIMIZATION_GUIDELINES.md`
+  - `docs/PROGRESS.md`
+  - `docs/PROJECT_CHECKLIST.md`
+  - `docs/instruction.md`
