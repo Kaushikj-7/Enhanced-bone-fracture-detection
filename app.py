@@ -31,9 +31,16 @@ def load_model():
     global model
     print(f"Loading model from {MODEL_PATH}...")
     model = MicroHybridModel(num_classes=1, pretrained=False)
-    
-    if os.path.exists(MODEL_PATH):
-        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+
+    active_model_path = MODEL_PATH
+    if not os.path.exists(active_model_path) and MODEL_PATH != DEFAULT_MODEL_PATH and os.path.exists(DEFAULT_MODEL_PATH):
+        print(
+            f"Warning: MODEL_PATH not found ({MODEL_PATH}). Falling back to default weights at {DEFAULT_MODEL_PATH}."
+        )
+        active_model_path = DEFAULT_MODEL_PATH
+
+    if os.path.exists(active_model_path):
+        checkpoint = torch.load(active_model_path, map_location=DEVICE)
         # strict=False keeps compatibility if checkpoint format/keys vary across runs.
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             load_result = model.load_state_dict(
@@ -43,19 +50,25 @@ def load_model():
             load_result = model.load_state_dict(checkpoint, strict=False)
 
         if load_result.missing_keys or load_result.unexpected_keys:
+            missing_preview = load_result.missing_keys[:5]
+            unexpected_preview = load_result.unexpected_keys[:5]
             print(
                 "Warning: checkpoint loaded with key mismatches "
                 f"(missing={len(load_result.missing_keys)}, "
-                f"unexpected={len(load_result.unexpected_keys)})."
+                f"unexpected={len(load_result.unexpected_keys)}). "
+                f"Samples missing={missing_preview}, unexpected={unexpected_preview}"
             )
     else:
         if MODEL_PATH != DEFAULT_MODEL_PATH:
             print(
                 f"Warning: MODEL_PATH env var points to a missing file: {MODEL_PATH}. "
-                f"Default path is {DEFAULT_MODEL_PATH}"
+                "No fallback checkpoint found; service will run with randomly initialized weights."
             )
         else:
-            print(f"Warning: Default model weights not found at {MODEL_PATH}")
+            print(
+                f"Warning: Default model weights not found at {MODEL_PATH}. "
+                "Service will run with randomly initialized weights."
+            )
     
     model.to(DEVICE)
     model.eval()
