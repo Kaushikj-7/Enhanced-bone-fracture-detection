@@ -21,11 +21,11 @@ app = FastAPI()
 # Path mirrors existing training artifact layout in this repository.
 DEFAULT_MODEL_PATH = "trained_models/outputs/micro_pipeline_run/micro/best_model.pth"
 MODEL_PATH = os.getenv("MODEL_PATH", DEFAULT_MODEL_PATH)
-STRICT_MODEL_LOAD = os.getenv("STRICT_MODEL_LOAD", "false").lower() in {
+STRICT_MODEL_LOAD = os.getenv("STRICT_MODEL_LOAD", "false").lower() in (
     "1",
     "true",
     "yes",
-}
+)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Global model instance
@@ -56,13 +56,15 @@ def load_model():
         else:
             load_result = model.load_state_dict(checkpoint, strict=STRICT_MODEL_LOAD)
 
-        if load_result.missing_keys or load_result.unexpected_keys:
-            missing_preview = load_result.missing_keys[:5]
-            unexpected_preview = load_result.unexpected_keys[:5]
+        missing_keys = getattr(load_result, "missing_keys", [])
+        unexpected_keys = getattr(load_result, "unexpected_keys", [])
+        if missing_keys or unexpected_keys:
+            missing_preview = missing_keys[:5]
+            unexpected_preview = unexpected_keys[:5]
             print(
                 "Warning: checkpoint loaded with key mismatches "
-                f"(missing={len(load_result.missing_keys)}, "
-                f"unexpected={len(load_result.unexpected_keys)}). "
+                f"(missing={len(missing_keys)}, "
+                f"unexpected={len(unexpected_keys)}). "
                 f"Samples missing={missing_preview}, unexpected={unexpected_preview}"
             )
     else:
